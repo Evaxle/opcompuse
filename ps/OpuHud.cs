@@ -120,6 +120,39 @@ namespace OpuHud
                 int rn = 0;
                 try { var c2 = GetCycle(aliveP); rn = c2; } catch { }
 
+                bool hostAlive = false;
+                foreach (string hostFile in new string[] { "opencode.alive.json", "mcp.alive.json" })
+                {
+                    try
+                    {
+                        string hp = Path.Combine(stateDir, hostFile);
+                        if (File.Exists(hp))
+                        {
+                            long t = ParseT(File.ReadAllText(hp));
+                            if (t > 0 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - t < 6000) { hostAlive = true; break; }
+                        }
+                    }
+                    catch { }
+                }
+                if (!hostAlive)
+                {
+                    if (linfo.Tag == null) linfo.Tag = DateTime.UtcNow;
+                    else if ((DateTime.UtcNow - (DateTime)linfo.Tag).TotalMilliseconds > 3000)
+                    {
+                        try { File.Delete(Path.Combine(stateDir, "hud.json")); } catch { }
+                        Application.Exit();
+                        return;
+                    }
+                    lw.ForeColor = Color.FromArgb(120, 122, 130);
+                    lw.Text = "W: idle";
+                    lr.ForeColor = Color.FromArgb(120, 122, 130);
+                    lr.Text = "R: -";
+                    linfo.Text = "waiting for opencode / mcp";
+                    lastText = linfo.Text;
+                    return;
+                }
+                linfo.Tag = null;
+
                 bool running = rt > 0 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - rt < 1500;
                 bool watching = at > 0 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - at < 4000;
 

@@ -81,6 +81,64 @@ async function readAlive() {
   } catch { return { alive: false, age: -1, meta: null } }
 }
 
+async function readSettings() {
+  try {
+    return JSON.parse(await fsp.readFile(path.join(os.homedir(), ".local", "share", "opencode", "opcompuse", "apex-memory", "settings.json"), "utf8"))
+  } catch { return {} }
+}
+
+async function ensureHud() {
+  try {
+    fs.mkdirSync(stateDir, { recursive: true })
+    const hudPath = path.join(stateDir, "hud.json")
+    try {
+      const j = JSON.parse(fs.readFileSync(hudPath, "utf8"))
+      if (j?.pid) {
+        let alive = false
+        try { process.kill(j.pid, 0); alive = true } catch { alive = false }
+        if (alive) return true
+      }
+    } catch {}
+    const s = await readSettings()
+    if (s.hud === false) return true
+    const exe = path.join(psDir, "OpuHud.exe")
+    if (fs.existsSync(exe)) {
+      let blocked = false
+      try {
+        const ch = nodeSpawn(exe, [stateDir], { detached: true, stdio: "ignore", windowsHide: true })
+        ch.on("error", () => { blocked = true })
+        await new Promise((resolve) => setTimeout(resolve, 900))
+        if (blocked) { try { ch.kill() } catch {} }
+        else {
+          let alive = false
+          try { process.kill(ch.pid, 0); alive = true } catch {}
+          if (alive) return true
+        }
+      } catch {}
+    }
+    try {
+      const PS = path.join(process.env.WINDIR || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+      const script = path.join(psDir, "opu-hud.ps1")
+      const ch2 = nodeSpawn(PS, ["-STA", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-StateDir", stateDir], { detached: true, stdio: "ignore", windowsHide: true })
+      try { ch2.unref() } catch {}
+      return true
+    } catch {}
+    return false
+  } catch { return false }
+}
+
+let hudHeartbeat = null
+void (async function hudLifecycle() {
+  const s = await readSettings()
+  if (s.hud === false) return
+  await ensureHud()
+  void atomicWrite(path.join(stateDir, "mcp.alive.json"), JSON.stringify({ t: Date.now(), pid: process.pid }))
+  hudHeartbeat = setInterval(() => {
+    void atomicWrite(path.join(stateDir, "mcp.alive.json"), JSON.stringify({ t: Date.now(), pid: process.pid }))
+  }, 2000)
+  hudHeartbeat.unref?.()
+})()
+
 async function readCachedState() {
   try {
     const raw = await fsp.readFile(path.join(stateDir, "state.txt"), "utf8")
@@ -91,6 +149,7 @@ async function readCachedState() {
 }
 
 async function captureFresh(mode, extra = {}) {
+  if (mode === "fresh") mode = "full"
   const params = { Mode: mode }
   if (extra.NameRegex) params.NameRegex = extra.NameRegex
   if (extra.FindDepth) params.FindDepth = extra.FindDepth

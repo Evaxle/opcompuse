@@ -97,6 +97,33 @@ public class Form : System.Windows.Forms.Form {
         lbl.ForeColor = System.Drawing.Color.FromArgb(255, 150, 90);
         return;
       }
+      bool hostAlive = false;
+      foreach (string hostFile in new string[] { "opencode.alive.json", "mcp.alive.json" }) {
+        try {
+          string hp = Path.Combine(StateDir, hostFile);
+          if (File.Exists(hp)) {
+            var line = File.ReadAllText(hp);
+            var tidx = line.IndexOf("\"t\":");
+            if (tidx >= 0) {
+              long t = long.Parse(line.Substring(tidx + 4).Trim(' ', ',', '}'));
+              var t2 = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+              if (t2 - t < 6000) { hostAlive = true; break; }
+            }
+          }
+        } catch {}
+      }
+      if (!hostAlive) {
+        lbl.Text = "OPU ∅";
+        lbl.ForeColor = System.Drawing.Color.FromArgb(120, 120, 125);
+        if (poll.Tag == null) { poll.Tag = DateTime.UtcNow; }
+        else if ((DateTime.UtcNow - (DateTime)poll.Tag).TotalMilliseconds > 3000) {
+          try { File.Delete(Path.Combine(StateDir, "hud.json")); } catch {}
+          System.Windows.Forms.Application.Exit();
+          return;
+        }
+        return;
+      }
+      poll.Tag = null;
       string alivePath = Path.Combine(StateDir, "alive.json");
       bool watching = false;
       if (File.Exists(alivePath)) {

@@ -190,6 +190,14 @@ export default Plugin.define({
     }
     void persistSettings()
 
+    let livenessTimer = null
+    function writeLiveness() {
+      atomicWrite(path.join(stateDir, "opencode.alive.json"), JSON.stringify({ t: Date.now(), pid: process.pid })).catch(() => {})
+    }
+    livenessTimer = setInterval(writeLiveness, 2000)
+    void writeLiveness()
+    if (S.hud !== false) void startHud()
+
     const PS = S.psEntry || path.join(process.env.WINDIR || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     function psCall(scriptFile, params = {}, timeoutMs = 15000) {
       const scriptPath = path.join(psDir, scriptFile).replace(/'/g, "''")
@@ -582,13 +590,17 @@ ${digestHead}`
         }
       }
       const script = path.join(psDir, "opu-hud.ps1")
-      const inner = `start "" /min "${PS}" -STA -NoProfile -ExecutionPolicy Bypass -File "${script}" -StateDir "${stateDir}"`
-      return new Promise((resolve) => {
-        execFile("cmd.exe", ["/d", "/c", inner], { timeout: 8000, windowsHide: true }, () => {
-          if (!hud) hud = { kill: () => stopHud() }
-          resolve(true)
-        })
-      })
+      PS_FLAGS: {
+        try {
+          const cps = await import("node:child_process")
+          const ch2 = cps.spawn(PS, ["-STA", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-StateDir", stateDir], { detached: true, stdio: "ignore", windowsHide: true })
+          try { ch2.unref() } catch {}
+          return true
+        } catch (e) {
+          console.log("[opcompuse] hud ps spawn failed: " + (e && e.message ? e.message : e))
+        }
+      }
+      return true
     }
     async function stopHud() {
       try {
@@ -642,6 +654,7 @@ ${digestHead}`
       const alive = await watcherAlive()
       if (!alive.alive) {
         if (process.env.OPCOMPUSE_WATCH_OFF !== "1") startWatcher()
+        else if (S.hud !== false) void startHud()
         const c = await captureFresh(mode)
         return { body: c.body, meta: c.meta, age: -1, source: "captured (watcher warming up)" }
       }
@@ -1143,6 +1156,11 @@ Speed rules: batch generously; skip OCR when digest has enough; re-read state on
     }) }
     else { console.log("[opcompuse] rpc contract unavailable (rpc.js missing); panel disabled") }
 
-    return () => stopWatcher()
+    return () => {
+      stopWatcher()
+      if (livenessTimer) { clearInterval(livenessTimer); livenessTimer = null }
+      try { fs.rmSync(path.join(stateDir, "opencode.alive.json"), { force: true }) } catch {}
+      void stopHud()
+    }
   },
 })
