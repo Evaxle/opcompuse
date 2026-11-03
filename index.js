@@ -1,5 +1,4 @@
-﻿import { Plugin } from "@opencode/plugin"
-import { Opcompuse } from "./rpc.js"
+import { Plugin, Rpc } from "@opencode/plugin"
 import { execFile } from "node:child_process"
 import fs from "node:fs"
 import fsp from "node:fs/promises"
@@ -27,6 +26,101 @@ function apexPack(obj, level = 9) {
   const json = Buffer.from(JSON.stringify(obj), "utf8")
   return Buffer.concat([APEX_MAGIC, zlib.gzipSync(json, { level })])
 }
+
+const Opcompuse = Rpc.define({
+  id: "opcompuse",
+  methods: {
+    status: {
+      input: { type: "object", properties: {}, additionalProperties: false },
+      output: {
+        type: "object",
+        properties: {
+          watchAlive: { type: "boolean" },
+          watchAge: { type: "number" },
+          digestAge: { type: "number" },
+          running: { type: "boolean" },
+          stoppedByOpu: { type: "boolean" },
+          currentWindow: { type: "string" },
+          currentProcess: { type: "string" },
+          events: { type: "array", items: { type: "string" } },
+          memory: {
+            type: "object",
+            properties: {
+              places: { type: "number" },
+              apps: { type: "number" },
+              dir: { type: "string" },
+            },
+            required: ["places", "apps", "dir"],
+            additionalProperties: true,
+          },
+          settings: { type: "object", additionalProperties: true },
+          note: { type: "string" },
+        },
+        required: ["watchAlive", "watchAge", "digestAge", "running", "stoppedByOpu", "currentWindow", "currentProcess", "events", "memory", "settings", "note"],
+        additionalProperties: false,
+      },
+    },
+    stop: {
+      input: { type: "object", properties: {}, additionalProperties: false },
+      output: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+        additionalProperties: false,
+      },
+    },
+    watch: {
+      input: {
+        type: "object",
+        properties: { command: { type: "string", enum: ["on", "off", "status"] } },
+        required: ["command"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+        additionalProperties: false,
+      },
+    },
+    settingsGet: {
+      input: { type: "object", properties: {}, additionalProperties: false },
+      output: { type: "object", additionalProperties: true },
+    },
+    settingsSet: {
+      input: { type: "object", additionalProperties: true },
+      output: { type: "object", additionalProperties: true },
+    },
+    memorySummary: {
+      input: { type: "object", properties: {}, additionalProperties: false },
+      output: {
+        type: "object",
+        properties: {
+          dir: { type: "string" },
+          places: { type: "array", items: { type: "string" } },
+          apps: { type: "array", items: { type: "string" } },
+        },
+        required: ["dir", "places", "apps"],
+        additionalProperties: false,
+      },
+    },
+    memorySave: {
+      input: {
+        type: "object",
+        properties: { key: { type: "string" }, value: { type: "string" }, kind: { type: "string", enum: ["place", "app", "note"] } },
+        required: ["key", "value"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+        additionalProperties: false,
+      },
+    },
+  },
+  events: {},
+})
 function apexUnpack(buf) {
   if (buf.length <= APEX_MAGIC.length) throw new Error("bad apex blob")
   if (!buf.subarray(0, APEX_MAGIC.length).equals(APEX_MAGIC)) throw new Error("bad apex magic")
@@ -878,7 +972,7 @@ Speed rules: batch generously; skip OCR when digest has enough; re-read state on
       event.system.push({ type: "text", text: head })
     })
 
-    await ctx.rpc.register(Opcompuse, {
+    if (Opcompuse) { await ctx.rpc.register(Opcompuse, {
       status: async (_input) => {
         const a = await watcherAlive()
         const cached = await readCachedState()
@@ -947,7 +1041,8 @@ Speed rules: batch generously; skip OCR when digest has enough; re-read state on
         await stopHud()
         return { text }
       },
-    })
+    }) }
+    else { console.log("[opcompuse] rpc contract unavailable (rpc.js missing); panel disabled") }
 
     return () => stopWatcher()
   },

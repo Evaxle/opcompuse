@@ -13,6 +13,9 @@ namespace OpuHud
         [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
         const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_SHIFT = 0x4;
         const int HOTKEY_STOP = 0xA020, WM_HOTKEY = 0x0312;
+        const int GWL_EXSTYLE = -20;
+        const int WS_EX_NOACTIVATE = 0x08000000;
+        const int WS_EX_TOOLWINDOW = 0x00000080;
 
         readonly Label lbl;
         readonly Button btn;
@@ -93,6 +96,16 @@ namespace OpuHud
                 }
             }
             catch { }
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+                return cp;
+            }
         }
 
         protected override void WndProc(ref Message m)
