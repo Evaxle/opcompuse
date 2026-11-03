@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Linq;
 using System.IO.Compression;
 using System.Reflection;
 using System.Text;
@@ -213,9 +214,10 @@ public class Installer : Form
             using (var ms = new MemoryStream(EmbeddedZip()))
             using (var zip = new ZipArchive(ms, ZipArchiveMode.Read))
             {
+                var extractRoot = pluginDir;
                 foreach (var entry in zip.Entries)
                 {
-                    var target = Path.Combine(pluginsDir, entry.FullName);
+                    var target = Path.Combine(extractRoot, entry.FullName);
                     if (entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\"))
                     {
                         Directory.CreateDirectory(target);
@@ -280,9 +282,10 @@ public class Installer : Form
             using (var ms = new MemoryStream(EmbeddedZip()))
             using (var zip = new ZipArchive(ms, ZipArchiveMode.Read))
             {
+                var extractRoot = pluginDir;
                 foreach (var entry in zip.Entries)
                 {
-                    var target = Path.Combine(pluginsDir, entry.FullName);
+                    var target = Path.Combine(extractRoot, entry.FullName);
                     if (entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\"))
                     { Directory.CreateDirectory(target); continue; }
                     Directory.CreateDirectory(Path.GetDirectoryName(target));
@@ -482,6 +485,7 @@ public static class Program
     public static int Main(string[] args)
     {
         var a0 = args.Length > 0 ? args[0].TrimStart('-', '/').ToLowerInvariant() : "";
+        var all = string.Join(" ", args).ToLowerInvariant();
         if (a0 == "h" || a0 == "help")
         {
             Console.WriteLine("OPCOMPUSE installer (GUI). Flags: silent [norestart] | uninstall | help");
@@ -508,8 +512,8 @@ public static class Program
             catch (Exception ex) { Console.WriteLine("[X] " + ex.Message); return 1; }
         }
 
-        var gui = new Installer(a0.Contains("norestart"));
-        if (a0.Contains("silent"))
+        var gui = new Installer(all.Contains("norestart"));
+        if (all.Contains("silent"))
         {
             gui.SilentRepair();
         }
