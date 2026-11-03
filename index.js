@@ -445,14 +445,19 @@ ${digestHead}`
       const hudPath = path.join(stateDir, "hud.json")
       try {
         const j = JSON.parse(fs.readFileSync(hudPath, "utf8"))
-        if (j?.pid && Date.now() - j.t < HUD_FRESH_MS * 8 && fs.existsSync(`C:\\Windows\\System32\\tasklist.exe`)) {
-          return true
-        }
+        if (j?.pid && Date.now() - j.t < HUD_FRESH_MS * 8) return true
       } catch {}
+      const exe = path.join(psDir, "OpuHud.exe")
+      if (fs.existsSync(exe)) {
+        const ch = await import("node:child_process").then((m) => m.spawn(exe, [stateDir], { detached: true, stdio: "ignore", windowsHide: true }))
+        try { ch.unref() } catch {}
+        hud = { kill: () => stopHud() }
+        return true
+      }
       const script = path.join(psDir, "opu-hud.ps1")
-      const inner = `start "" /min "${PS}" -NoProfile -ExecutionPolicy Bypass -File "${script}" -StateDir "${stateDir}"`
+      const inner = `start "" /min "${PS}" -STA -NoProfile -ExecutionPolicy Bypass -File "${script}" -StateDir "${stateDir}"`
       return new Promise((resolve) => {
-        execFile("cmd.exe", ["/c", inner], { timeout: 8000, windowsHide: true }, () => {
+        execFile("cmd.exe", ["/d", "/c", inner], { timeout: 8000, windowsHide: true }, () => {
           if (!hud) hud = { kill: () => stopHud() }
           resolve(true)
         })

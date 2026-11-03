@@ -5,6 +5,21 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+if (-not $StateDir) { $StateDir = "$env:LOCALAPPDATA\Temp\opencode\opcompuse" }
+New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+$hudPath = Join-Path $StateDir "hud.json"
+try { [IO.File]::AppendAllText((Join-Path $StateDir "hud-trace.log"), (Get-Date -f 'HH:mm:ss.fff') + " start pid=$PID sta=" + [Threading.Thread]::CurrentThread.ApartmentState + "`r`n") } catch {}
+$existing = $null
+try {
+  $existing = Get-Content $hudPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+} catch {}
+if ($existing -and $existing.pid -and $existing.pid -ne $PID) {
+  $alive = $false
+  try { $alive = $null -ne (Get-Process -Id $existing.pid -ErrorAction SilentlyContinue) } catch {}
+  if ($alive) { exit 0 }
+}
+[IO.File]::WriteAllText($hudPath, '{"t":' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ',"pid":' + $PID + '}', [Text.Encoding]::UTF8)
+
 if (-not ('OpuHud.Form' -as [type])) {
 Add-Type -ReferencedAssemblies System.Windows.Forms,System.Drawing -TypeDefinition @"
 using System;
@@ -50,7 +65,13 @@ public class Form : System.Windows.Forms.Form {
     HandleCreated += (s, e) => {
       RegisterHotKey(Handle, HOTKEY_STOP, MOD_CONTROL | MOD_ALT | MOD_SHIFT, 0x58);
     };
-    HandleDestroyed += (s, e) => UnregisterHotKey(Handle, HOTKEY_STOP);
+    HandleDestroyed += (s, e) => { UnregisterHotKey(Handle, HOTKEY_STOP); Trace-Hud("destroyed"); };
+  }
+
+  public void TraceHud(string m) { try { Text += ""; } catch {} }
+  static void TraceHudStatic(string msg, string dir) {
+    try { System.IO.File.AppendAllText(System.IO.Path.Combine(dir, "hud-trace.log"), DateTime.Now.ToString("HH:mm:ss.fff") + " " + msg + "\r\n"); } catch {}
+  }
   }
 
   protected override void WndProc(ref Message m) {
@@ -144,7 +165,18 @@ static class Program {
 "@
 }
 
+function Trace-Hud([string]$msg) {
+  try { [IO.File]::AppendAllText((Join-Path $StateDir "hud-trace.log"), (Get-Date -f 'HH:mm:ss.fff') + " $msg`r`n") } catch {}
+}
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $f = New-Object OpuHud.Form
+Trace-Hud "form constructed"
 if ($StateDir) { $f.StateDir = $StateDir }
-[System.Windows.Forms.Application]::Run($f)
+try {
+  [System.Windows.Forms.Application]::Run($f)
+  Trace-Hud "run returned"
+} catch {
+  Trace-Hud "run threw: $($_.Exception.Message)"
+} finally {
+  try { if (Test-Path $hudPath) { Remove-Item $hudPath -Force -ErrorAction SilentlyContinue } } catch {}
+}

@@ -123,7 +123,17 @@ function Invoke-ElementOp($el, [string]$op, [string]$value) {
       }
     }
   }
-  if ($op -eq "focus") { $el.SetFocus(); return $null }
+  if ($op -eq "focus") {
+    try { $el.SetFocus(); return $null } catch {}
+    try {
+      $pt = $el.GetClickablePoint()
+      Set-Mouse ([int]$pt.X) ([int]$pt.Y)
+      Press-Button "left" 1
+      return "fallback-click"
+    } catch {}
+    try { $el.SetFocus() ; return $null } catch {}
+    throw "element cannot receive focus and has no clickable point"
+  }
   if ($op -in "invoke", "select", "clickel", "toggle", "expand", "collapse") {
     $pt = $el.GetClickablePoint()
     Set-Mouse ([int]$pt.X) ([int]$pt.Y)
