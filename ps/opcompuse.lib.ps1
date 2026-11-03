@@ -278,7 +278,15 @@ function Get-FcuDigest {
     [string]$TargetsJson = ""
   )
   if ($TargetsJson) {
-    return Get-FcuDigestMulti -Quick:$Quick -NoOcr:$NoOcr -TargetsJson $TargetsJson
+    $probe = $null
+    $ok = $false
+    try { $probe = ConvertFrom-Json $TargetsJson; $ok = $true } catch {}
+    if (-not $ok) {
+      try { $TargetsJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($TargetsJson)) } catch { $TargetsJson = "" }
+    }
+    if ($TargetsJson) {
+      return Get-FcuDigestMulti -Quick:$Quick -NoOcr:$NoOcr -TargetsJson $TargetsJson
+    }
   }
   return Get-FcuDigestSingle -Quick:$Quick -NoOcr:$NoOcr -NameRegex:$NameRegex -FindDepth:$FindDepth -FindMax:$FindMax
 }
@@ -324,6 +332,72 @@ function Resolve-FcuTargets([string]$TargetsJson) {
   return $winsList
 }
 
+function Get-FcuDisplayIndexForRect($rect) {
+  try {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+    $cx = $rect.X + $rect.Width / 2
+    $cy = $rect.Y + $rect.Height / 2
+    $n = 0
+    foreach ($sc in [System.Windows.Forms.Screen]::AllScreens) {
+      $b = $sc.Bounds
+      if ($cx -ge $b.X -and $cx -le ($b.X + $b.Width) -and $cy -ge $b.Y -and $cy -le ($b.Y + $b.Height)) { return $n }
+      $n++
+    }
+  } catch {}
+  return 0
+}
+
+function Get-FcuDisplaySegment {
+  param([int]$screenIdx, [System.Collections.Generic.List[string]]$lines, [switch]$NoOcr, [int]$maxWindowRowsPer = 30)
+  try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue } catch {}
+  try { Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue } catch {}
+  $screens = [System.Windows.Forms.Screen]::AllScreens
+  if ($screenIdx -lt 0 -or $screenIdx -ge $screens.Count) {
+    $lines.Add("#ERR disp:$screenIdx not found (have 0..$($screens.Count - 1))")
+    return
+  }
+  $sc = $screens[$screenIdx]
+  $b = $sc.Bounds
+  $lines.Add("#DX disp:$screenIdx primary=$($sc.Primary) name=$($sc.DeviceName) rect=$($b.X),$($b.Y),$($b.X + $b.Width),$($b.Y + $b.Height)")
+  try {
+    $children = $script:AUTO::RootElement.FindAll(
+      [System.Windows.Automation.TreeScope]::Children,
+      [System.Windows.Automation.Condition]::TrueCondition)
+    $n = 0
+    foreach ($c in $children) {
+      try {
+        $r = $c.GetCurrentPropertyValue($script:AUTO::BoundingRectangleProperty)
+        if (-not $r -or [double]$r.X -lt -1e12) { continue }
+        $cx = $r.X + $r.Width / 2
+        if ($cx -lt $b.X -or $cx -gt ($b.X + $b.Width)) { continue }
+        $n++
+        if ($n -gt $maxWindowRowsPer) { break }
+        $h = Get-FcuHwndOfElement $c
+        $pname = ""
+        try { $pname = Get-FcuProcessName $h } catch {}
+        $name = ""
+        try { $name = $c.Current.Name } catch {}
+        $name = ($name -replace "[\r\n\t|]+", " ")
+        if ($name.Length -gt 70) { $name = $name.Substring(0,70) }
+        $lines.Add("#V$screenIdx disp=N$screenIdx hwnd=$h rect=$([int]$r.X),$([int]$r.Y),$([int]($r.X + $r.Width)),$([int]($r.Y + $r.Height)) $pname `"$name`"")
+      } catch {}
+    }
+  } catch {}
+  if (-not $NoOcr) {
+    try {
+      $cap = Get-FcuBitmap ([System.Windows.Rect]::new($b.X, $b.Y, $b.Width, $b.Height))
+      if ($null -ne $cap) {
+        $ocr = Invoke-FcuOcr -bmp $cap.bmp -OffsetX $cap.x -OffsetY $cap.y
+        $cap.bmp.Dispose()
+        if ($ocr.Count -gt 0) {
+          $lines.Add("#OCR --- text visible on display $screenIdx ---")
+          $ocr | ForEach-Object { $lines.Add("#O $_") }
+        }
+      }
+    } catch {}
+  }
+}
+
 function Get-FcuDigestMulti {
   param(
     [switch]$Quick,
@@ -332,14 +406,29 @@ function Get-FcuDigestMulti {
   )
   $t0 = [System.Diagnostics.Stopwatch]::StartNew()
   $lines = New-Object System.Collections.Generic.List[string]
-  $targets = Resolve-FcuTargets $TargetsJson
+  $specs = @()
+  try { $specs = @((ConvertFrom-Json $TargetsJson)) } catch {}
+  $winSpecs = @()
+  $dispSpecs = @()
+  foreach ($s2 in $specs) {
+    if ("$s2" -match "^disp:(\d+|primary)$" -or "$s2" -match "^disp:all$") { $dispSpecs += "$s2" }
+    else { $winSpecs += "$s2" }
+  }
+  $targets = @()
+  if ($winSpecs.Count -gt 0) {
+    $targets = Resolve-FcuTargets (($winSpecs | ConvertTo-Json -Compress))
+  }
   $meta = [ordered]@{ t = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
   $meta.targets = $targets.Count
+  $meta.disp = $dispSpecs.Count
   $meta.specs = $TargetsJson
-  if ($targets.Count -eq 0) {
+  if ($targets.Count -eq 0 -and $dispSpecs.Count -eq 0) {
     $lines.Add("#NOTARGETS none matched; falling back to foreground")
     $meta.fallback = $true
     return Get-FcuDigestSingle -Quick:$Quick -NoOcr:$NoOcr
+  }
+  if ($targets.Count -eq 0 -and $winSpecs.Count -gt 0) {
+    $lines.Add("#NOTARGETS window specs matched nothing (display targets still active)")
   }
   $meta.hwnds = ($targets | ForEach-Object { $_.hwnd }) -join ","
   $idx = 0
@@ -349,11 +438,23 @@ function Get-FcuDigestMulti {
     try { $el = $script:AUTO::FromHandle([IntPtr][long]$t.hwnd) } catch { $el = $null }
     if ($null -eq $el -and $t.el) { $el = $t.el }
     if ($null -eq $el) { $lines.Add("#TARGET $idx FAILED hwnd=$($t.hwnd)"); continue }
-    $metaP = Get-OneWindowDigest -el $el -idx $idx -target $t -lines $lines -Quick:$Quick -NoOcr:($NoOcr -or $idx -gt 1) -MaxRows $rowsPer
+    [void](Get-OneWindowDigest -el $el -idx $idx -target $t -lines $lines -Quick:$Quick -NoOcr:($NoOcr -or $idx -gt 1) -MaxRows $rowsPer)
     if ($idx -eq 1) {
       $meta.process = $t.process
       $meta.winName = $t.name
       $meta.hwnd = $t.hwnd
+    }
+  }
+  foreach ($ds in $dispSpecs) {
+    if ($ds -eq "disp:all") {
+      $scrCount = 0
+      try { $scrCount = [System.Windows.Forms.Screen]::AllScreens.Count } catch {}
+      for ($si = 0; $si -lt $scrCount; $si++) { Get-FcuDisplaySegment -screenIdx $si -lines $lines -NoOcr:($NoOcr -or $si -gt 0) }
+    } else {
+      $m = [regex]::Match($ds, "^disp:(\d+|primary)$")
+      $screenIdx = 0
+      if ($m.Groups[1].Value -notmatch "primary") { [void]([int]::TryParse($m.Groups[1].Value, [ref]$screenIdx)) }
+      Get-FcuDisplaySegment -screenIdx $screenIdx -lines $lines -NoOcr:$NoOcr
     }
   }
   try {

@@ -294,7 +294,7 @@ const TOOLS = [
   {
     name: "opu_settings",
     description:
-`Read/toggle opcompuse runtime settings. get | set with fields: memory, memoryAuto, memoryConfirm, access (minimal|standard|full), hud (on-screen indicator), watchIntervalMs, burstIntervalMs, ocrEveryMs, interpreterEverySec, targets (window selectors "re:<regex-title>" / "proc:<name>" / "pid:<n>" / "hwnd:<n>", max 8). The always-running watcher and the OPU HUD pick changes up within a second; conductor model switching is available inside OpenCode via opcompuse_settings.`,
+`Read/toggle opcompuse runtime settings. get | set with fields: memory, memoryAuto, memoryConfirm, access (minimal|standard|full), hud (on-screen indicator), watchIntervalMs, burstIntervalMs, ocrEveryMs, interpreterEverySec,         targets (window selectors "re:<regex-title>" / "proc:<name>" / "pid:<n>" / "hwnd:<n>", display selectors "disp:<monitor-index>" / "disp:all", max 8). The always-running watcher and the OPU HUD pick changes up within a second; conductor model switching is available inside OpenCode via opcompuse_settings.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -308,7 +308,7 @@ const TOOLS = [
         burstIntervalMs: { type: "number" },
         ocrEveryMs: { type: "number" },
         interpreterEverySec: { type: "number" },
-        targets: { type: "array", items: { type: "string" }, maxItems: 8 },
+        targets: { type: "array", items: { type: "string" }, maxItems: 8, description: 'selectors "re:<regex-title>" / "proc:<process>" / "pid:<n>" / "hwnd:<n>" / "disp:<monitor-index>" / "disp:all"' },
         reset: { type: "boolean" },
       },
       additionalProperties: false,

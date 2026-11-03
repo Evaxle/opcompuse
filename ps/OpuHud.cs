@@ -22,6 +22,7 @@ namespace OpuHud
         readonly string stateDir;
         string lastText = "";
         int targetCount = 0;
+        int dispCount = 0;
 
         public OpuForm(string dir)
         {
@@ -106,6 +107,7 @@ namespace OpuHud
                 at = ParseT(a);
                 int i = a.IndexOf("\"process\":\""); if (i >= 0) { int j = a.IndexOf('"', i + 11); app = a.Substring(i + 11, j - i - 11); }
                 int k = a.IndexOf("\"targets\":"); if (k >= 0) { int m = k + 10; int n = m; while (n < a.Length && char.IsDigit(a[n])) n++; int.TryParse(a.Substring(m, n - m), out targetCount); }
+                int kd = a.IndexOf("\"disp\":"); if (kd >= 0) { int m2 = kd + 7; int n2 = m2; while (n2 < a.Length && char.IsDigit(a[n2])) n2++; int.TryParse(a.Substring(m2, n2 - m2), out dispCount); }
             }
             catch { }
                 try
@@ -131,7 +133,7 @@ namespace OpuHud
                 string extra = "";
                 if (stopped) extra = "press t / opcompuse_watch on to resume";
                 else if (running) extra = "acting: " + app + (steps > 0 ? " (step " + steps + ")" : "");
-                else if (watching) extra = "watching: " + app + (targetCount > 1 ? " +" + (targetCount - 1) + " more windows" : "");
+                else if (watching) extra = "watching: " + app + (targetCount > 1 ? " +" + (targetCount - 1) + " more windows" : "") + (dispCount > 0 ? " | " + dispCount + " display(s)" : "");
                 var txt = extra;
                 if (txt != lastText)
                 {

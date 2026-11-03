@@ -382,7 +382,7 @@ export default Plugin.define({
     const events = []
     let lastInterpreterMs = 0
     let lastChangeAt = 0
-    let hudWanted = true
+    let hudWanted = false
 
     async function watcherTick() {
       try {
@@ -413,7 +413,8 @@ export default Plugin.define({
         const meta = q.meta || {}
         meta.watchHeartbeat = true
         meta.watchInterval = S.watchIntervalMs
-        meta.targets = S.targets.length
+        meta.targets = S.targets.filter(t => typeof t === "string" && !/^disp:/i.test(t)).length
+        meta.disp = S.targets.filter(t => typeof t === "string" && /^disp:/i.test(t)).length
         await atomicWrite(path.join(stateDir, "alive.json"), JSON.stringify(meta))
         if (sig === prevSig) {
           watcherNextMs = S.watchIntervalMs * 1.6
@@ -555,14 +556,30 @@ ${digestHead}`
       const hudPath = path.join(stateDir, "hud.json")
       try {
         const j = JSON.parse(fs.readFileSync(hudPath, "utf8"))
-        if (j?.pid && Date.now() - j.t < HUD_FRESH_MS * 8) return true
+        if (j?.pid) {
+          let alive = false
+          try { process.kill(j.pid, 0); alive = true } catch { alive = false }
+          if (alive && Date.now() - j.t < HUD_FRESH_MS * 8) return true
+        }
       } catch {}
       const exe = path.join(psDir, "OpuHud.exe")
       if (fs.existsSync(exe)) {
-        const ch = await import("node:child_process").then((m) => m.spawn(exe, [stateDir], { detached: true, stdio: "ignore", windowsHide: true }))
-        try { ch.unref() } catch {}
-        hud = { kill: () => stopHud() }
-        return true
+        const cp = await import("node:child_process")
+        let spawnError = null
+        let ch
+        try {
+          ch = cp.spawn(exe, [stateDir], { detached: true, stdio: "ignore", windowsHide: true })
+          ch.on("error", (e) => { spawnError = e })
+          await new Promise((resolve) => setTimeout(resolve, 700))
+          if (spawnError || (ch.exitCode != null && ch.exitCode !== 0)) throw new Error("hud exe blocked")
+          if ((ch.pid != null) && (() => { try { process.kill(ch.pid, 0); return true } catch { return false } })()) {
+            hud = { kill: () => stopHud() }
+            return true
+          }
+          throw new Error("hud exe did not stay alive")
+        } catch (e) {
+          if (ch && !ch.killed) { try { ch.kill() } catch {} }
+        }
       }
       const script = path.join(psDir, "opu-hud.ps1")
       const inner = `start "" /min "${PS}" -STA -NoProfile -ExecutionPolicy Bypass -File "${script}" -StateDir "${stateDir}"`
@@ -608,6 +625,7 @@ ${digestHead}`
       return { body, meta, age }
     }
     async function captureFresh(mode = "full", extra = {}) {
+      if (mode === "fresh") mode = "full"
       const params = { Mode: mode }
       if (extra.NameRegex) params.NameRegex = extra.NameRegex
       if (extra.FindDepth) params.FindDepth = extra.FindDepth
@@ -820,11 +838,12 @@ Elements index from latest opcompuse_state. Prefer element ops / keyboard. acces
         {
           name: "watch",
           description: `Control the watch-ahead loop that keeps the screen digest hot so opcompuse_state reads are 1-5ms.
-Command on/off/status. targets (optional, replaces list): array of window selectors —
-  "re:<regex-on-title>" e.g. "re:GitHub.*opcompuse" (plain text also works),
-  "proc:<process-name-fragment>" e.g. "proc:msedge",
-  "pid:<number>", "hwnd:<number>".
-When targets are set, digests cover those windows together (rows windowed per target) instead of only the foreground window. HUD shows the target count.`,
+Command on/off/status. targets (optional, replaces list): array of selectors —
+  WINDOWS: "re:<regex-on-title>" e.g. "re:GitHub.*opcompuse" (plain text also works),
+           "proc:<process-name-fragment>" e.g. "proc:msedge", "pid:<number>", "hwnd:<number>".
+  DISPLAYS: "disp:<n>" (monitor index, 0-based; Screen.AllScreens order; disp:primary = main),
+           "disp:all" = every display. Display targets digest the whole monitor: window list + full-screen OCR.
+When targets are set, digests cover those windows/displays together instead of only the foreground window. HUD shows target counts.`,
           input: {
             type: "object",
             properties: {
@@ -974,7 +993,7 @@ Never stores usernames/passwords/tokens/API keys/emails - refused at save time.`
               burstIntervalMs: SCHEMA_NUM,
               ocrEveryMs: SCHEMA_NUM,
               interpreterEverySec: SCHEMA_NUM,
-              targets: { type: "array", items: { type: "string" }, description: 'window selectors "re:<regex-title>" / "proc:<process>" / "pid:<n>" / "hwnd:<n>" (max 8) - windows the watcher digests' },
+              targets: { type: "array", items: { type: "string" }, description: 'selectors "re:<regex-title>" / "proc:<process>" / "pid:<n>" / "hwnd:<n>" / "disp:<monitor-index>" / "disp:all" (max 8) - windows or displays the watcher digests' },
               reset: SCHEMA_BOOL,
             },
             required: [],
