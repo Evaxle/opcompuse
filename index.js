@@ -158,7 +158,7 @@ export default Plugin.define({
       memoryConfirm: false,
       access: "standard",
       decider: DEFAULT_DECIDER,
-      watchIntervalMs: 900,
+      watchIntervalMs: 700,
       ocrEveryMs: 3000,
       watcherModel: "",
       interpreterEverySec: 90,
