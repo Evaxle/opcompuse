@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
@@ -17,10 +17,10 @@ namespace OpuHud
         const int WS_EX_NOACTIVATE = 0x08000000;
         const int WS_EX_TOOLWINDOW = 0x00000080;
 
-        readonly Label lbl;
-        readonly Button btn;
+        readonly Label lw; readonly Label lr; readonly Label linfo; readonly Button btn;
         readonly Timer poll;
         readonly string stateDir;
+        string lastText = "";
 
         public OpuForm(string dir)
         {
@@ -29,22 +29,15 @@ namespace OpuHud
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
-            Size = new Size(214, 34);
+            Size = new Size(330, 34);
             var wa = Screen.PrimaryScreen.WorkingArea;
             Location = new Point(wa.Right - Width - 12, wa.Top + 8);
             BackColor = Color.FromArgb(24, 26, 32);
-            PaintGradient = true;
+            DoubleBuffered = true;
 
-            lbl = new Label
-            {
-                AutoSize = false,
-                Dock = DockStyle.Left,
-                Width = 158,
-                TextAlign = ContentAlignment.MiddleLeft,
-                ForeColor = Color.FromArgb(170, 170, 176),
-                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-                Text = "OPU ..."
-            };
+            lw = new Label { AutoSize = false, Location = new Point(4, 2), Size = new Size(96, 12), Font = new Font("Consolas", 7.5f, FontStyle.Bold), Text = "" };
+            lr = new Label { AutoSize = false, Location = new Point(104, 2), Size = new Size(80, 12), Font = new Font("Consolas", 7.5f, FontStyle.Bold), Text = "" };
+            linfo = new Label { AutoSize = false, Location = new Point(4, 15), Size = new Size(230, 14), Font = new Font("Consolas", 8f), ForeColor = Color.FromArgb(150, 152, 160), Text = "" };
             btn = new Button
             {
                 Dock = DockStyle.Right,
@@ -59,43 +52,14 @@ namespace OpuHud
             btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(92, 34, 34);
             btn.Click += (s, e) => DoStop("STOP button");
             Controls.Add(btn);
-            Controls.Add(lbl);
+            Controls.Add(lw); Controls.Add(lr); Controls.Add(linfo);
 
-            poll = new Timer { Interval = 300 };
+            poll = new Timer { Interval = 250 };
             poll.Tick += (s, e) => OnPoll();
             poll.Start();
 
             HandleCreated += (s, e) => RegisterHotKey(Handle, HOTKEY_STOP, MOD_CONTROL | MOD_ALT | MOD_SHIFT, 0x58);
             HandleDestroyed += (s, e) => UnregisterHotKey(Handle, HOTKEY_STOP);
-
-            try
-            {
-                using (var g = CreateGraphics())
-                {
-                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-                }
-            }
-            catch { }
-        }
-
-        public bool PaintGradient { get; set; }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            try
-            {
-                using (var b = new LinearGradientBrush(ClientRectangle,
-                    Color.FromArgb(26, 28, 36), Color.FromArgb(14, 16, 22), 60f))
-                {
-                    var g = e.Graphics;
-                    e.Graphics.FillRectangle(b, ClientRectangle);
-                    using (var pen = new Pen(Color.FromArgb(90, 110, 210), 1f))
-                        g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-                }
-            }
-            catch { }
         }
 
         protected override CreateParams CreateParams
@@ -120,60 +84,94 @@ namespace OpuHud
             try
             {
                 File.WriteAllText(Path.Combine(stateDir, "stop.json"),
-                    JsonObject("t", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), "by", by));
+                    "{\"t\":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + ",\"by\":\"" + by + "\"}");
             }
             catch { }
-            lbl.Text = "OPU STOPPED";
-            lbl.ForeColor = Color.FromArgb(255, 150, 90);
         }
 
         void OnPoll()
         {
-            if (lbl.Text == "OPU STOPPED") return;
             try
             {
-                bool stopped = File.Exists(Path.Combine(stateDir, "stop.json"));
-                bool watching = Fresh(Path.Combine(stateDir, "alive.json"), 4000);
-                bool running = Fresh(Path.Combine(stateDir, "running.json"), 1500);
+                string stopP = Path.Combine(stateDir, "stop.json");
+                string aliveP = Path.Combine(stateDir, "alive.json");
+                string runP = Path.Combine(stateDir, "running.json");
 
-                if (running)
+                bool stopped = File.Exists(stopP);
+                long at = 0; long rt = 0; int steps = 0; string app = "";
+                try
                 {
-                    lbl.Text = "OPU RUNNING";
-                    lbl.ForeColor = Color.FromArgb(255, 190, 90);
+                    var a = File.ReadAllText(aliveP);
+                    at = ParseT(a);
+                    int i = a.IndexOf("\"process\":\""); if (i >= 0) { int j = a.IndexOf('"', i + 11); app = a.Substring(i + 11, j - i - 11); }
                 }
-                else if (watching)
+                catch { }
+                try
                 {
-                    lbl.Text = "OPU WATCHING";
-                    lbl.ForeColor = Color.FromArgb(120, 235, 150);
+                    var r = File.ReadAllText(runP);
+                    rt = ParseT(r);
+                    int i = r.IndexOf("\"steps\":"); if (i >= 0) { int j = i + 8; int k = j; while (k < r.Length && char.IsDigit(r[k])) k++; int.TryParse(r.Substring(j, k - j), out steps); }
                 }
-                else if (stopped)
+                catch { }
+                int rn = 0;
+                try { var c2 = GetCycle(aliveP); rn = c2; } catch { }
+
+                bool running = rt > 0 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - rt < 1500;
+                bool watching = at > 0 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - at < 4000;
+
+                                lw.ForeColor = stopped ? Color.FromArgb(255, 150, 90) : (watching ? Color.FromArgb(120, 235, 150) : Color.FromArgb(120, 122, 130));
+                lw.Text = stopped ? "W: STOPPED" : (watching ? "W: WATCHING" : "W: idle");
+
+                lr.ForeColor = running ? Color.FromArgb(255, 190, 90) : Color.FromArgb(120, 122, 130);
+                lr.Text = running ? "R: RUNNING" + (steps > 0 ? " x" + steps : "") : "R: -";
+
+                linfo.ForeColor = stopped ? Color.FromArgb(255, 150, 90) : Color.FromArgb(150, 152, 160);
+                string extra = "";
+                if (stopped) extra = "press t / opcompuse_watch on to resume";
+                else if (running) extra = "acting: " + app;
+                else if (watching) extra = "watching: " + app;
+                var txt = extra;
+                if (txt != lastText)
                 {
-                    lbl.Text = "OPU STOPPED";
-                    lbl.ForeColor = Color.FromArgb(255, 150, 90);
-                }
-                else
-                {
-                    lbl.Text = "OPU idle";
-                    lbl.ForeColor = Color.FromArgb(150, 150, 158);
+                    linfo.Text = txt;
+                    lastText = txt;
                 }
             }
             catch { }
         }
 
-        static bool Fresh(string path, long maxAgeMs)
+        static int GetCycle(string path) { try
         {
+            var a = File.ReadAllText(path);
+            int i = a.IndexOf("\"cycle\":"); if (i < 0) return 0;
+            int j = i + 8, k = j; while (k < a.Length && char.IsDigit(a[k])) k++;
+            int v; int.TryParse(a.Substring(j, Math.Max(1, k - j)), out v); return v;
+        } catch { return 0; } }
+
+        static long ParseT(string line)
+        {
+            int i = line.IndexOf("\"t\":");
+            if (i < 0) return 0;
+            int j = i + 4, k = j;
+            while (k < line.Length && char.IsDigit(line[k])) k++;
+            long v = 0; long.TryParse(line.Substring(j, Math.Max(1, k - j)), out v);
+            return v;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
             try
             {
-                var line = File.ReadAllText(path);
-                int i = line.IndexOf("\"t\":");
-                if (i < 0) return false;
-                int j = i + 4;
-                int k = j;
-                while (k < line.Length && (char.IsDigit(line[k]))) k++;
-                long t = long.Parse(line.Substring(j, k - j));
-                return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - t < maxAgeMs;
+                using (var b = new LinearGradientBrush(ClientRectangle,
+                    Color.FromArgb(26, 28, 36), Color.FromArgb(14, 16, 22), 60f))
+                {
+                    e.Graphics.FillRectangle(b, ClientRectangle);
+                    using (var pen = new Pen(Color.FromArgb(90, 110, 210), 1f))
+                        e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+                }
             }
-            catch { return false; }
+            catch { }
         }
 
         internal static string JsonObject(params object[] kv)
@@ -235,4 +233,6 @@ namespace OpuHud
             }
         }
     }
-}
+
+    }
+

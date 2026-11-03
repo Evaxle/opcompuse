@@ -158,9 +158,12 @@ export default Plugin.define({
       memoryConfirm: false,
       access: "standard",
       decider: DEFAULT_DECIDER,
-      watchIntervalMs: 700,
-      ocrEveryMs: 3000,
       watcherModel: "",
+      conductorModel: "",
+      hud: true,
+      watchIntervalMs: 700,
+      burstIntervalMs: 250,
+      ocrEveryMs: 3000,
       interpreterEverySec: 90,
       psEntry: "",
     }
@@ -376,6 +379,7 @@ export default Plugin.define({
     let lastOcrMs = 0
     const events = []
     let lastInterpreterMs = 0
+    let lastChangeAt = 0
 
     async function watcherTick() {
       try {
@@ -393,7 +397,7 @@ export default Plugin.define({
         meta.watchInterval = S.watchIntervalMs
         await atomicWrite(path.join(stateDir, "alive.json"), JSON.stringify(meta))
         if (sig === prevSig) {
-          watcherNextMs = Math.min(2400, S.watchIntervalMs * 2 || 1800)
+          watcherNextMs = S.watchIntervalMs * 1.6
           try {
             const stPath = path.join(stateDir, "state.json")
             const metaNow = await fsp.readFile(stPath, "utf8").then((j) => JSON.parse(j)).catch(() => null)
@@ -413,7 +417,8 @@ export default Plugin.define({
           } catch {}
           return
         }
-        watcherNextMs = S.watchIntervalMs
+        watcherNextMs = (Date.now() - (lastChangeAt || 0) < 1400) ? (S.burstIntervalMs || 250) : S.watchIntervalMs
+        lastChangeAt = Date.now()
         const now = new Date().toLocaleTimeString("en-GB", { hour12: false })
         if (winLine !== prevWinLine) { events.push(`[${now}] window: ${winLine}`); prevWinLine = winLine }
         if (focusLine !== prevFocus) { events.push(`[${now}] focus: ${focusLine}`); prevFocus = focusLine }
@@ -493,7 +498,7 @@ ${digestHead}`
       if (watcherTimer) return true
       try { fs.mkdirSync(stateDir, { recursive: true }) } catch {}
       try { fs.rmSync(path.join(stateDir, "stop.json"), { force: true }) } catch {}
-      startHud()
+      if (S.hud !== false) startHud()
       let cancelled = false
       const loop = async () => {
         if (cancelled) return
@@ -909,7 +914,7 @@ Never stores usernames/passwords/tokens/API keys/emails - refused at save time.`
         },
         {
           name: "settings",
-          description: `Read/toggle opcompuse runtime settings (memory, access, models, speed). get | set.`,
+          description: `Read/toggle opcompuse runtime settings. get | set. Includes memory toggles, access level, WATCHER model (24/7 event interpreter), DECIDER model (ambiguous-screen calls), CONDUCTOR model (switches this session's agent model for opu tasks), HUD on/off, speed intervals.`,
           input: {
             type: "object",
             properties: {
@@ -919,9 +924,12 @@ Never stores usernames/passwords/tokens/API keys/emails - refused at save time.`
               memoryConfirm: SCHEMA_BOOL,
               access: { type: "string", enum: ["minimal", "standard", "full"] },
               decider: SCHEMA_STR,
-              watchIntervalMs: SCHEMA_NUM,
-              ocrEveryMs: SCHEMA_NUM,
               watcherModel: SCHEMA_STR,
+              conductorModel: { type: "string", description: `Switch the CURRENT session's model (the conductor that orchestrates opu): format "providerID/modelID", e.g. "opencode-go/glm-5.3-flash" or a local LM Studio/KoboldCpp model` },
+              hud: SCHEMA_BOOL,
+              watchIntervalMs: SCHEMA_NUM,
+              burstIntervalMs: SCHEMA_NUM,
+              ocrEveryMs: SCHEMA_NUM,
               interpreterEverySec: SCHEMA_NUM,
               reset: SCHEMA_BOOL,
             },
@@ -929,11 +937,32 @@ Never stores usernames/passwords/tokens/API keys/emails - refused at save time.`
             additionalProperties: false,
           },
           options: { namespace: "opcompuse", codemode: true },
-          async execute(inp) {
+          async execute(inp, context) {
             if (inp.action === "set" || inp.reset) {
-              if (inp.reset) S = { ...defaults }
-              for (const k of Object.keys(defaults)) if (inp[k] != null) S[k] = inp[k]
+              if (inp.reset) S = { ...defaults, hud: S.hud }
+              for (const k of Object.keys(defaults)) if (inp[k] != null && k !== "conductorModel") S[k] = inp[k]
               await persistSettings()
+              if (inp.conductorModel != null && inp.conductorModel !== "" && context?.sessionID) {
+                try {
+                  const ref = parseModelRef(inp.conductorModel)
+                  await ctx.session.switchModel({ sessionID: context.sessionID, model: { providerID: ref.providerID, id: ref.modelID } })
+                  S.conductorModel = `${ref.providerID}/${ref.modelID}`
+                } catch (e) {
+                  return { content: `#settings saved, but conductor model switch failed: ${e && e.message ? e.message : e}. Format: "providerID/modelID"` }
+                }
+              }
+              const summary = Object.entries(S).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join("\n")
+              return {
+                content:
+`#opcompuse settings (runtime; persists in ${F.settings})
+${summary}
+
+Model roles:
+- WATCHER (24/7 event interpreter) : ${S.watcherModel || "off (local-only events, $0)"}
+- DECIDER (fcu_decide)            : ${S.decider}
+- CONDUCTOR (this session agent)  : ${S.conductorModel || "unchanged (your selected model)"}
+Set via: opcompuse_settings {action:"set", conductorModel:"providerID/modelID"} etc.`
+              }
             }
             const summary = Object.entries(S).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join("\n")
             return { content: `#opcompuse settings (runtime; persists in ${F.settings})\n${summary}` }

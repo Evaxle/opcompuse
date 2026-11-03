@@ -171,6 +171,7 @@ foreach ($s in $steps) {
     break
   }
   $stepIdx++
+  [IO.File]::WriteAllText($runPath, '{"t":' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ',"pid":' + $PID + ',"steps":' + $stepIdx + '}', [Text.Encoding]::UTF8)
   $err = $null
   $note = ""
   try {
