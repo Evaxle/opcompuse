@@ -1,7 +1,8 @@
 ﻿param(
-  [int]$IntervalMs = 800,
+  [int]$IntervalMs = 700,
   [int]$OcrEveryMs = 3000,
-  [string]$OutDir = "$env:LOCALAPPDATA\Temp\opencode\fcu"
+  [string]$OutDir = "$env:LOCALAPPDATA\Temp\opencode\opcompuse",
+  [string]$TargetsJson = ""
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\opcompuse.lib.ps1"
@@ -37,7 +38,7 @@ while ($true) {
   $cycle++
   $t0 = [System.Diagnostics.Stopwatch]::StartNew()
   $d = $null
-  try { $d = Get-FcuDigest -Quick -NoOcr } catch { Start-Sleep -Milliseconds $IntervalMs; continue }
+  try { $d = Get-FcuDigest -Quick -NoOcr -TargetsJson:$TargetsJson } catch { Start-Sleep -Milliseconds $IntervalMs; continue }
   $sig = ($d.text -join "|")
   $meta = $d.meta
   $meta.watchHeartbeat = $true
@@ -64,7 +65,7 @@ while ($true) {
     $full = $null
     try {
       $sinceOcr = [int]($lastOcr.ElapsedMilliseconds - $lastOcrMs)
-      $full = Get-FcuDigest -NoOcr:($sinceOcr -lt $OcrEveryMs)
+      $full = Get-FcuDigest -NoOcr:($sinceOcr -lt $OcrEveryMs) -TargetsJson:$TargetsJson
       if ($sinceOcr -ge $OcrEveryMs) { $lastOcrMs = [int]$lastOcr.ElapsedMilliseconds }
     } catch {
       Start-Sleep -Milliseconds $IntervalMs; continue
@@ -87,4 +88,5 @@ while ($true) {
 
   Start-Sleep -Milliseconds $IntervalMs
 }
+
 

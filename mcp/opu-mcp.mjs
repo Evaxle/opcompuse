@@ -293,11 +293,44 @@ const TOOLS = [
   },
   {
     name: "opu_settings",
-    description: "Read opcompuse runtime settings snapshot from disk (recommended switches are managed inside OpenCode via opcompuse_settings).",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    handler: async () => {
+    description:
+`Read/toggle opcompuse runtime settings. get | set with fields: memory, memoryAuto, memoryConfirm, access (minimal|standard|full), hud (on-screen indicator), watchIntervalMs, burstIntervalMs, ocrEveryMs, interpreterEverySec, targets (window selectors "re:<regex-title>" / "proc:<name>" / "pid:<n>" / "hwnd:<n>", max 8). The always-running watcher and the OPU HUD pick changes up within a second; conductor model switching is available inside OpenCode via opcompuse_settings.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["get", "set"], default: "get" },
+        memory: { type: "boolean" },
+        memoryAuto: { type: "boolean" },
+        memoryConfirm: { type: "boolean" },
+        access: { type: "string", enum: ["minimal", "standard", "full"] },
+        hud: { type: "boolean" },
+        watchIntervalMs: { type: "number" },
+        burstIntervalMs: { type: "number" },
+        ocrEveryMs: { type: "number" },
+        interpreterEverySec: { type: "number" },
+        targets: { type: "array", items: { type: "string" }, maxItems: 8 },
+        reset: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+    handler: async (a) => {
+      const sp = path.join(os.homedir(), ".local", "share", "opencode", "opcompuse", "apex-memory", "settings.json")
+      if (a.action === "set" || a.reset) {
+        let cur = {}
+        try { cur = JSON.parse(await fsp.readFile(sp, "utf8")) } catch {}
+        if (a.reset) {
+          cur = {}
+        } else {
+          for (const k of ["memory", "memoryAuto", "memoryConfirm", "hud"]) if (a[k] != null) cur[k] = !!a[k]
+          for (const k of ["watchIntervalMs", "burstIntervalMs", "ocrEveryMs", "interpreterEverySec"]) if (a[k] != null) cur[k] = a[k]
+          if (a.access) cur.access = a.access
+          if (Array.isArray(a.targets)) cur.targets = a.targets.map(String).slice(0, 8)
+        }
+        await atomicWrite(sp, JSON.stringify(cur, null, 2))
+        return `#settings updated (watcher + HUD apply within ~1s): ${JSON.stringify(cur)}`
+      }
       try {
-        return await fsp.readFile(path.join(os.homedir(), ".local", "share", "opencode", "opcompuse", "apex-memory", "settings.json"), "utf8")
+        return await fsp.readFile(sp, "utf8")
       } catch { return "{}" }
     },
   },

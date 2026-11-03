@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 
 if (-not ('Fcu.Native' -as [type])) {
 Add-Type -TypeDefinition @"
@@ -269,6 +269,139 @@ function Format-FcuOutput($digest) {
 }
 
 function Get-FcuDigest {
+  param(
+    [switch]$Quick,
+    [switch]$NoOcr,
+    [string]$NameRegex = "",
+    [int]$FindDepth = 8,
+    [int]$FindMax = 30,
+    [string]$TargetsJson = ""
+  )
+  if ($TargetsJson) {
+    return Get-FcuDigestMulti -Quick:$Quick -NoOcr:$NoOcr -TargetsJson $TargetsJson
+  }
+  return Get-FcuDigestSingle -Quick:$Quick -NoOcr:$NoOcr -NameRegex:$NameRegex -FindDepth:$FindDepth -FindMax:$FindMax
+}
+
+function Resolve-FcuTargets([string]$TargetsJson) {
+  $specs = @()
+  try { $specs = @((ConvertFrom-Json $TargetsJson)) } catch { return @() }
+  $winsList = @()
+  $children = $null
+  try {
+    $children = $script:AUTO::RootElement.FindAll(
+      [System.Windows.Automation.TreeScope]::Children,
+      [System.Windows.Automation.Condition]::TrueCondition)
+  } catch { return @() }
+  foreach ($spec in $specs) {
+    $s2 = "$spec"
+    $mode = ""; $val = ""
+    if ($s2 -match "^([a-zA-Z]+):(.+)$") { $mode = $Matches[1].ToLower(); $val = $Matches[2] } else { $mode = "re"; $val = $s2 }
+    foreach ($c in $children) {
+      try {
+        $n = ""; $outPid = 0
+        try { $n = $c.Current.Name } catch {}
+        $h = Get-FcuHwndOfElement $c
+        if ($h -eq [IntPtr]::Zero) { continue }
+        [void][Fcu.Native]::GetWindowThreadProcessId($h, [ref]$outPid)
+        $pname = ""
+        try { $pname = Get-FcuProcessName $h } catch {}
+        $matched = $false
+        switch ($mode) {
+          "hwnd" { $matched = ("$h" -eq $val) }
+          "pid"   { $matched = ("$outPid" -eq $val) }
+          "proc" { $matched = ($pname -like "*$val*") }
+          "re"   { if ($val) { try { $matched = ($n -match $val) } catch { $matched = ($n -like "*$val*") } } }
+          default { }
+        }
+        if ($matched) {
+          $winsList += @{ hwnd = "$h"; el = $c; name = ($n -replace "[\r\n\t|]+", " "); process = $pname }
+          break
+        }
+      } catch {}
+    }
+  }
+  return $winsList
+}
+
+function Get-FcuDigestMulti {
+  param(
+    [switch]$Quick,
+    [switch]$NoOcr,
+    [string]$TargetsJson = ""
+  )
+  $t0 = [System.Diagnostics.Stopwatch]::StartNew()
+  $lines = New-Object System.Collections.Generic.List[string]
+  $targets = Resolve-FcuTargets $TargetsJson
+  $meta = [ordered]@{ t = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+  $meta.targets = $targets.Count
+  $meta.specs = $TargetsJson
+  if ($targets.Count -eq 0) {
+    $lines.Add("#NOTARGETS none matched; falling back to foreground")
+    $meta.fallback = $true
+    return Get-FcuDigestSingle -Quick:$Quick -NoOcr:$NoOcr
+  }
+  $meta.hwnds = ($targets | ForEach-Object { $_.hwnd }) -join ","
+  $idx = 0
+  foreach ($t in $targets) {
+    $idx++
+    $rowsPer = if ($targets.Count -gt 1) { 70 } else { 140 }
+    try { $el = $script:AUTO::FromHandle([IntPtr][long]$t.hwnd) } catch { $el = $null }
+    if ($null -eq $el -and $t.el) { $el = $t.el }
+    if ($null -eq $el) { $lines.Add("#TARGET $idx FAILED hwnd=$($t.hwnd)"); continue }
+    $metaP = Get-OneWindowDigest -el $el -idx $idx -target $t -lines $lines -Quick:$Quick -NoOcr:($NoOcr -or $idx -gt 1) -MaxRows $rowsPer
+    if ($idx -eq 1) {
+      $meta.process = $t.process
+      $meta.winName = $t.name
+      $meta.hwnd = $t.hwnd
+    }
+  }
+  try {
+    $wins = Get-FcuWindows
+    if ($wins.Count -gt 0) { $lines.Add("#WINS --- open windows ---"); $wins | Select-Object -First 12 | ForEach-Object { $lines.Add("#V $_") } }
+  } catch {}
+  $meta.ms = $t0.ElapsedMilliseconds
+  $meta.visionNeeded = ($lines.Count -lt 4)
+  return @{ text = [string[]]$lines; meta = $meta }
+}
+
+function Get-OneWindowDigest {
+  param($el, [int]$idx, $target, [System.Collections.Generic.List[string]]$lines, [switch]$Quick, [switch]$NoOcr, [int]$MaxRows = 140)
+  $wr = [System.Windows.Rect]::Empty
+  try {
+    $r0 = $el.GetCurrentPropertyValue($script:AUTO::BoundingRectangleProperty)
+    if ($r0 -and [double]$r0.X -gt -1e12) { $wr = $r0 }
+  } catch {}
+  $wn = ""
+  try { $wn = $target.name } catch {}
+  $lines.Add("#W$idx win=$($target.process) `"$wn`" winrect=$([int]$wr.X),$([int]$wr.Y),$([int]$wr.Width),$([int]$wr.Height) hwnd=$($target.hwnd)")
+  if ($Quick) {
+    foreach ($r in (Get-FcuRows -root $el -MaxDepth 2 -MaxRows 10)) { $lines.Add($r) }
+    return
+  }
+  try {
+    $fr = Get-FocusedRow
+    if ($fr -and $idx -eq 1) { $lines.Add("#F $fr") }
+  } catch {}
+  $rows = Get-FcuRows -root $el -MaxDepth 7 -MaxRows $MaxRows
+  $rows | ForEach-Object { $lines.Add($_) }
+  if ($rows.Count -ge $MaxRows) { $lines.Add("#TRUNCATED window tree capped at $MaxRows rows") }
+  if (-not $NoOcr -and $wr.Width -gt 4) {
+    try {
+      $cap = Get-FcuBitmap $wr
+      if ($null -ne $cap) {
+        $ocr = Invoke-FcuOcr -bmp $cap.bmp -OffsetX $cap.x -OffsetY $cap.y
+        $cap.bmp.Dispose()
+        if ($ocr.Count -gt 0) {
+          $lines.Add("#OCR --- text visible in pixels (win $idx) ---")
+          $ocr | ForEach-Object { $lines.Add("#O $_") }
+        }
+      }
+    } catch {}
+  }
+}
+
+function Get-FcuDigestSingle {
   param(
     [switch]$Quick,
     [switch]$NoOcr,

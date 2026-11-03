@@ -21,6 +21,7 @@ namespace OpuHud
         readonly Timer poll;
         readonly string stateDir;
         string lastText = "";
+        int targetCount = 0;
 
         public OpuForm(string dir)
         {
@@ -99,13 +100,14 @@ namespace OpuHud
 
                 bool stopped = File.Exists(stopP);
                 long at = 0; long rt = 0; int steps = 0; string app = "";
-                try
-                {
-                    var a = File.ReadAllText(aliveP);
-                    at = ParseT(a);
-                    int i = a.IndexOf("\"process\":\""); if (i >= 0) { int j = a.IndexOf('"', i + 11); app = a.Substring(i + 11, j - i - 11); }
-                }
-                catch { }
+            try
+            {
+                var a = File.ReadAllText(aliveP);
+                at = ParseT(a);
+                int i = a.IndexOf("\"process\":\""); if (i >= 0) { int j = a.IndexOf('"', i + 11); app = a.Substring(i + 11, j - i - 11); }
+                int k = a.IndexOf("\"targets\":"); if (k >= 0) { int m = k + 10; int n = m; while (n < a.Length && char.IsDigit(a[n])) n++; int.TryParse(a.Substring(m, n - m), out targetCount); }
+            }
+            catch { }
                 try
                 {
                     var r = File.ReadAllText(runP);
@@ -128,8 +130,8 @@ namespace OpuHud
                 linfo.ForeColor = stopped ? Color.FromArgb(255, 150, 90) : Color.FromArgb(150, 152, 160);
                 string extra = "";
                 if (stopped) extra = "press t / opcompuse_watch on to resume";
-                else if (running) extra = "acting: " + app;
-                else if (watching) extra = "watching: " + app;
+                else if (running) extra = "acting: " + app + (steps > 0 ? " (step " + steps + ")" : "");
+                else if (watching) extra = "watching: " + app + (targetCount > 1 ? " +" + (targetCount - 1) + " more windows" : "");
                 var txt = extra;
                 if (txt != lastText)
                 {

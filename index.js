@@ -166,8 +166,10 @@ export default Plugin.define({
       ocrEveryMs: 3000,
       interpreterEverySec: 90,
       psEntry: "",
+      targets: [],
     }
     let S = { ...defaults, ...optsIn }
+    if (!Array.isArray(S.targets)) S.targets = []
     const apexStats = { places: { raw: 0, packed: 0 }, apps: { raw: 0, packed: 0 } }
 
     try {
@@ -380,10 +382,26 @@ export default Plugin.define({
     const events = []
     let lastInterpreterMs = 0
     let lastChangeAt = 0
+    let hudWanted = true
 
     async function watcherTick() {
       try {
-        const quickRaw = await psCall("state.ps1", { Mode: "quick" }, 9000)
+        try {
+          const diskS = JSON.parse(await fsp.readFile(F.settings, "utf8"))
+          if (diskS && typeof diskS === "object") {
+            for (const k of Object.keys(defaults)) {
+              if (k in diskS && JSON.stringify(diskS[k]) !== JSON.stringify(S[k])) S[k] = diskS[k]
+            }
+          }
+        } catch {}
+        if (!Array.isArray(S.targets)) S.targets = []
+        if (S.hud === false && hudWanted) { void stopHud(); hudWanted = false }
+        if (S.hud !== false && !hudWanted) { void startHud(); hudWanted = true }
+        const quickRaw = await psCall("state.ps1", {
+          Mode: "quick",
+          NoOcr: false,
+          TargetsJson: S.targets.length ? Buffer.from(JSON.stringify(S.targets), "utf8").toString("base64") : "",
+        }, 9000)
         const q = splitMeta(quickRaw)
         let winLine = ""
         let focusLine = ""
@@ -395,6 +413,7 @@ export default Plugin.define({
         const meta = q.meta || {}
         meta.watchHeartbeat = true
         meta.watchInterval = S.watchIntervalMs
+        meta.targets = S.targets.length
         await atomicWrite(path.join(stateDir, "alive.json"), JSON.stringify(meta))
         if (sig === prevSig) {
           watcherNextMs = S.watchIntervalMs * 1.6
@@ -594,6 +613,9 @@ ${digestHead}`
       if (extra.FindDepth) params.FindDepth = extra.FindDepth
       if (extra.FindMax) params.FindMax = extra.FindMax
       if (extra.NoOcr) params.NoOcr = true
+      if (Array.isArray(S.targets) && S.targets.length) {
+        params.TargetsJson = Buffer.from(JSON.stringify(S.targets), "utf8").toString("base64")
+      }
       const raw = await psCall("state.ps1", params, mode === "quick" ? 8000 : 20000)
       return splitMeta(raw)
     }
@@ -797,20 +819,41 @@ Elements index from latest opcompuse_state. Prefer element ops / keyboard. acces
         },
         {
           name: "watch",
-          description: `Control the watch-ahead loop that keeps the screen digest hot so opcompuse_state reads are 1-5ms.`,
+          description: `Control the watch-ahead loop that keeps the screen digest hot so opcompuse_state reads are 1-5ms.
+Command on/off/status. targets (optional, replaces list): array of window selectors —
+  "re:<regex-on-title>" e.g. "re:GitHub.*opcompuse" (plain text also works),
+  "proc:<process-name-fragment>" e.g. "proc:msedge",
+  "pid:<number>", "hwnd:<number>".
+When targets are set, digests cover those windows together (rows windowed per target) instead of only the foreground window. HUD shows the target count.`,
           input: {
             type: "object",
-            properties: { command: { type: "string", enum: ["on", "off", "status"] } },
+            properties: {
+              command: { type: "string", enum: ["on", "off", "status"] },
+              targets: { type: "array", items: { type: "string" }, maxItems: 8 },
+              clearTargets: SCHEMA_BOOL,
+            },
             required: [],
             additionalProperties: false,
           },
           options: { namespace: "opcompuse", codemode: true },
           async execute(inp) {
             const cmd = inp.command || "status"
-            if (cmd === "on") { stopWatcher(); startWatcher(); return { content: `#WATCH started (interval ${S.watchIntervalMs}ms idle-adaptive, state dir ${stateDir})` } }
-            if (cmd === "off") { stopWatcher(); return { content: "#WATCH stopped" } }
+            let note = ""
+            if (inp.targets && inp.targets.length) {
+              S.targets = inp.targets.map((x) => String(x).slice(0, 120)).slice(0, 8)
+              await persistSettings()
+              note = `; watching ${S.targets.length} target(s): ${S.targets.join(" ; ")}`
+            }
+            if (inp.clearTargets) {
+              S.targets = []
+              await persistSettings()
+              note = "; targets cleared (back to foreground watching)"
+            }
+            if (cmd === "on") { stopWatcher(); startWatcher(); return { content: `#WATCH started (interval ${S.watchIntervalMs}ms idle-adaptive, burst ${S.burstIntervalMs}ms)${note} (dir ${stateDir})` } }
+            if (cmd === "off") { stopWatcher(); return { content: `#WATCH stopped${note}` } }
+            const tNote = Array.isArray(S.targets) && S.targets.length ? ` targets=[${S.targets.join(" ; ")}]` : ""
             const a = await watcherAlive()
-            return { content: a.alive ? `#WATCH alive age=${a.age}ms interval=${S.watchIntervalMs}ms dir=${stateDir}` : `#WATCH not running (use "on")` }
+            return { content: a.alive ? `#WATCH alive age=${a.age}ms interval=${S.watchIntervalMs}ms${tNote} dir=${stateDir}` : `#WATCH not running (use "on")${tNote}` }
           },
         },
         {
@@ -931,6 +974,7 @@ Never stores usernames/passwords/tokens/API keys/emails - refused at save time.`
               burstIntervalMs: SCHEMA_NUM,
               ocrEveryMs: SCHEMA_NUM,
               interpreterEverySec: SCHEMA_NUM,
+              targets: { type: "array", items: { type: "string" }, description: 'window selectors "re:<regex-title>" / "proc:<process>" / "pid:<n>" / "hwnd:<n>" (max 8) - windows the watcher digests' },
               reset: SCHEMA_BOOL,
             },
             required: [],
@@ -939,9 +983,16 @@ Never stores usernames/passwords/tokens/API keys/emails - refused at save time.`
           options: { namespace: "opcompuse", codemode: true },
           async execute(inp, context) {
             if (inp.action === "set" || inp.reset) {
-              if (inp.reset) S = { ...defaults, hud: S.hud }
-              for (const k of Object.keys(defaults)) if (inp[k] != null && k !== "conductorModel") S[k] = inp[k]
+              if (inp.reset) S = { ...defaults, hud: S.hud, targets: S.targets }
+              for (const k of Object.keys(defaults)) {
+                if (inp[k] != null && k !== "conductorModel") {
+                  if (k === "targets") S.targets = Array.isArray(inp.targets) ? inp.targets.slice(0, 8).map(String) : S.targets
+                  else S[k] = inp[k]
+                }
+              }
               await persistSettings()
+              if (S.hud === false) { void stopHud() }
+              else if (watcherTimer) { void startHud() }
               if (inp.conductorModel != null && inp.conductorModel !== "" && context?.sessionID) {
                 try {
                   const ref = parseModelRef(inp.conductorModel)
@@ -951,7 +1002,7 @@ Never stores usernames/passwords/tokens/API keys/emails - refused at save time.`
                   return { content: `#settings saved, but conductor model switch failed: ${e && e.message ? e.message : e}. Format: "providerID/modelID"` }
                 }
               }
-              const summary = Object.entries(S).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join("\n")
+              const summary = Object.entries(S).map(([k, v]) => `${k}=${JSON.stringify(Array.isArray(v) && v.length === 0 ? [] : v)}`).join("\n")
               return {
                 content:
 `#opcompuse settings (runtime; persists in ${F.settings})
