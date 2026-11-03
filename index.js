@@ -44,18 +44,6 @@ function stepsPattern(steps) {
 
 export default Plugin.define({
   id: "opcompuse",
-  options: {
-    memory: { type: "boolean" },
-    memoryAuto: { type: "boolean" },
-    memoryConfirm: { type: "boolean" },
-    access: { type: "string" },
-    decider: { type: "string" },
-    watchIntervalMs: { type: "number" },
-    ocrEveryMs: { type: "number" },
-    watcherModel: { type: "string" },
-    interpreterEverySec: { type: "number" },
-    psEntry: { type: "string" },
-  },
   async setup(ctx) {
     const pluginDir = findPluginDir()
     const psDir = path.join(pluginDir || ".", "ps")
@@ -88,7 +76,11 @@ export default Plugin.define({
     try {
       fs.mkdirSync(memoryRoot, { recursive: true })
       const saved = JSON.parse(await fsp.readFile(F.settings, "utf8"))
-      for (const [k, v] of Object.entries(saved)) if (k in defaults && v != null) S[k] = v
+      if (saved && typeof saved === "object") {
+        for (const [k, v] of Object.entries(saved)) {
+          if (k in defaults && v != null) S[k] = v
+        }
+      }
     } catch {}
 
     async function persistSettings() {

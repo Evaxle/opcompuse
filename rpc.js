@@ -94,3 +94,4 @@ export const Opcompuse = Rpc.define({
   },
 })
 
+export default Opcompuse
